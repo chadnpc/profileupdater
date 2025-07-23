@@ -81,7 +81,16 @@ process {
   if (!$skipBuildOutputTest.IsPresent) {
     Test-ModuleManifest -Path $manifestFile.FullName -ErrorAction Stop -Verbose
   }
-  $TestResults = Invoke-Pester -OutputXml ([IO.Path]::Combine("$TestsPath", "results.xml"))
+  if (!(Get-Command New-PesterConfiguration -Module Pester -ErrorAction Ignore)) {
+    # install the latest version
+    Install-Module -Name Pester -Force -SkipPublisherCheck
+    Import-Module Pester -Force -ErrorAction Stop
+  }
+  $PesterConfig = New-PesterConfiguration
+  $PesterConfig.TestResult.OutputFormat = "NUnitXml"
+  $PesterConfig.TestResult.OutputPath = [IO.Path]::Combine("$TestsPath", "results.xml")
+  $PesterConfig.TestResult.Enabled = $True
+  $TestResults = Invoke-Pester -Configuration $PesterConfig
 }
 
 end {
