@@ -1,7 +1,7 @@
 ﻿
 # [profileupdater](https://www.powershellgallery.com/packages/profileupdater)
 
-🔥 Blazingly fast PowerShell thingy that stonks up your terminal game.
+🔥 A simple module to manage and version control your powershell $profile
 
 [![Build Module](https://github.com/chadnpc/profileupdater/actions/workflows/build_module.yaml/badge.svg)](https://github.com/chadnpc/profileupdater/actions/workflows/build_module.yaml)
 [![Downloads](https://img.shields.io/powershellgallery/dt/profileupdater.svg?style=flat&logo=powershell&color=blue)](https://www.powershellgallery.com/packages/profileupdater)
@@ -21,4 +21,4 @@ Import-Module profileupdater
 
 ## License
 
-This project is licensed under the [WTFPL License](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
