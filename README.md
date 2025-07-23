@@ -1,5 +1,5 @@
 ﻿
-# [profileupdater](https://www.powershellgallery.com/packages/profileupdater)
+## [pwsh profile updater](https://www.powershellgallery.com/packages/profileupdater)
 
 🔥 A simple module to manage and version control your powershell $profile
 
