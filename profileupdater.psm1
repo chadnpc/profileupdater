@@ -1,7 +1,162 @@
 ﻿
 #!/usr/bin/env pwsh
+
 #region    Classes
-# Main class
+# $global:profile_initialized = $false
+
+class ProfileCfg {
+  [bool] $UseOmp = $true
+  [bool] $UseZoxide = $true
+  [Microsoft.PowerShell.ExecutionPolicy] $ExecutionPolicy = "RemoteSigned"
+  static [string] $scriptroot = (Get-Item $PROFILE).Directory.FullName
+  hidden $get_omp_Init_job
+
+  ProfileCfg() {
+    [void][ProfileCfg]::From([ProfileCfg]::GetJsonPath(), [ref]$this)
+  }
+  ProfileCfg([IO.FileInfo]$json) {
+    [void][ProfileCfg]::From($json, [ref]$this)
+  }
+  static [ProfileCfg] Create() {
+    return [ProfileCfg]::From([ProfileCfg]::GetJsonPath(), [ref][ProfileCfg]::new())
+  }
+  static [ProfileCfg] Create([IO.FileInfo]$json) {
+    return [ProfileCfg]::From($json, [ref][ProfileCfg]::new())
+  }
+  static hidden [ProfileCfg] From([IO.FileInfo]$json, [ref]$o) {
+    $txt = [IO.File]::ReadAllText($json.FullName)
+    if ([string]::IsNullOrWhiteSpace($txt)) {
+      throw [InvalidOperationException]::new("Cannot import from empty json file $json")
+    }
+    $obj = $txt | ConvertFrom-Json
+    $o.Value.PsObject.Properties.Add([psnoteproperty]::new("omp_json", [IO.Path]::Combine([ProfileCfg]::scriptroot, "alain.omp.json")))
+    $o.Value.PsObject.Properties.Add([psnoteproperty]::new("get_omp_Init_job", $null))
+    $obj.PSObject.Properties.Name.ForEach({ $o.Value.$_ ? ($o.Value.$_ = $obj.$_) : ($o.Value.PsObject.Properties.Add([psnoteproperty]::new($_, $obj.$_))) })
+    return $o.Value
+  }
+  static [IO.FileInfo] GetJsonPath() {
+    return [IO.Path]::Combine([ProfileCfg]::scriptroot, "powershell.config.json")
+  }
+  [void] Initialize() {
+    if ((Get-Variable profile_initialized).Value) { return }
+    $cfg_ref = [ref]$this
+    $this.get_omp_Init_job = Start-ThreadJob -Name "Oh My Posh init" -ScriptBlock {
+      $cfg = $using:cfg_ref.value;
+      $omp_json = $cfg.omp_json;
+      $data_dir = $cfg.getOmpDatadir()
+      $omp_init_ps1_file = $IsWindows ? $(
+        [IO.Path]::Exists($data_dir) ? [string](Get-Item -ea Ignore -Path ("$data_dir/init.*.ps1")) : (& oh-my-posh init powershell --config="$omp_json" --print).Substring(3).Split("'")[0]
+      ): $(
+        $f = [IO.Path]::GetTempPath() + "init." + [Guid]::NewGuid().ToString() + ".ps1";
+        [IO.File]::WriteAllText($f, (& oh-my-posh init powershell --config="$omp_json" --print))
+        $f
+      )
+
+      if (![string]::IsNullOrWhiteSpace($omp_init_ps1_file)) {
+        if ([IO.File]::Exists($omp_json)) {
+          $l = [IO.File]::ReadAllLines($omp_init_ps1_file)
+          if (!$l[0].StartsWith('$VerbosePreference = "silentlyContinue"')) {
+            $l[0] = '$VerbosePreference = "silentlyContinue"' + "`n" + $l[0]
+          }
+          $t = [string]::Join("`n", $l).TrimEnd()
+          if ($t.EndsWith("} | Import-Module -Global")) { $t += ' -Verbose:$false' }
+          [IO.File]::WriteAllText($omp_init_ps1_file, $t)
+          return $omp_init_ps1_file
+        } else {
+          Write-Error "Cannot find $omp_json!"
+        }
+      } else { write-waning "Using omp is disabled" }
+    } -Verbose:$false
+    Set-Variable profile_initialized -Value $true -Scope Global
+    Set-Variable VerbosePreference -Value "silentlyContinue" -Scope Global
+    Set-Variable WarningPreference -Value "silentlyContinue" -Scope Global
+
+    # ----- Environment variables -----
+    $null = Start-ThreadJob -Name "Set env variables" -ScriptBlock {
+      if ((Get-Variable IsWindows).Value) {
+        Set-Env GIT_SSH -Scope Machine -Value "C:\Windows\system32\OpenSSH\ssh.exe" -Verbose:$false
+        Set-Env GIT_SSH_COMMAND -Scope Machine -Value "C:\Windows\system32\OpenSSH\ssh.exe -o ControlMaster=auto -o ControlPersist=60s" -Verbose:$false
+      }
+      Set-Env PATH -Scope Machine -Value ([string]::Join([IO.Path]::PathSeparator, (Get-Item Env:/PATH).value, [IO.Path]::Combine((Get-Variable HOME).value, ".dotnet/tools"))) -Verbose:$false
+
+      if ([IO.Path]::Exists("$((Get-Item Env:/USERPROFILE).value)/.pyenv/bin")) { cliHelper.env\Set-Env -Name PATH -Scope 'Machine' -Value ('{0}{1}{2}' -f (Get-Item Env:/PATH).value, [IO.Path]::PathSeparator, "$((Get-Item Env:/USERPROFILE).value)/.pyenv/bin") }
+
+      # $((gi Env:/USERPROFILE).value)/.local/bin/env
+      if ([IO.Path]::Exists("$((Get-Item Env:/USERPROFILE).value)/.local/bin/")) {
+        cliHelper.env\Set-Env -Name LOCAL_BIN -Scope 'Machine' -Value "$((Get-Item Env:/USERPROFILE).value)/.local/bin/"
+        cliHelper.env\Set-Env -Name PATH -Scope 'Machine' -Value ('{0}{1}{2}' -f (Get-Item Env:/PATH).value, [IO.Path]::PathSeparator, "$((Get-Item Env:/USERPROFILE).value)/.local/bin/")
+      }
+
+      # $((gi Env:/USERPROFILE).value)/.local/share/vdhcoapp
+      if ([IO.Path]::Exists("$((Get-Item Env:/USERPROFILE).value)/.local/share/vdhcoapp/")) {
+        cliHelper.env\Set-Env -Name VDHC_PATH -Scope 'Machine' -Value "$((Get-Item Env:/USERPROFILE).value)/.local/share/vdhcoapp/"
+        cliHelper.env\Set-Env -Name PATH -Scope 'Machine' -Value ('{0}{1}{2}' -f (Get-Item Env:/PATH).value, [IO.Path]::PathSeparator, "$((Get-Item Env:/USERPROFILE).value)/.local/share/vdhcoapp/")
+      }
+
+      # curl -sSLf https://github.com/aclap-dev/vdhcoapp/releases/latest/download/install.sh | bash
+      if ([IO.Path]::Exists("$((Get-Item Env:/USERPROFILE).value)/.bun")) {
+        cliHelper.env\Set-Env -Name BUN_INSTALL -Scope 'Machine' -Value "$((Get-Item Env:/USERPROFILE).value)/.bun"
+        cliHelper.env\Set-Env -Name PATH -Scope 'Machine' -Value ('{0}{1}{2}' -f (Get-Item Env:/PATH).value, [IO.Path]::PathSeparator, "$((Get-Item Env:/USERPROFILE).value)/.bun/bin")
+      }
+    }
+
+    # -----  Fzf -----
+    if (!(Get-Variable IsWindows).Value) {
+      Import-Module PSFzf -Verbose:$false
+      Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+f' -PSReadlineChordReverseHistory 'Ctrl+r' -Verbose:$false
+    }
+    # ----- INSTALL DEPENDENCIES -----
+    if (!(Get-Command -Name 'oh-my-posh' -Type Application -ErrorAction SilentlyContinue)) {
+      (Get-Variable IsWindows).Value ? (winget install --id=JanDeDobbeleer.OhMyPosh -e) : $null
+    }
+    if (!(Get-Command -Name 'zoxide' -Type Application -ErrorAction SilentlyContinue)) {
+      (Get-Variable IsWindows).Value ? (winget install --id=ajeetdsouza.zoxide -e) : $null
+    }
+    if (!(Get-Command -Name 'fzf' -Type Application -ErrorAction SilentlyContinue)) {
+      (Get-Variable IsWindows).Value ? (winget install --id=junegunn.fzf -e) : $null
+    }
+    # ----- ZOXIDE config -----
+    if ($this.UseZoxide) {
+      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([string]::join("`n", @(& zoxide init powershell)))) -Verbose:$false
+    }
+    # ----- ReadLine suggestions -----
+    # Enable-PowerType
+    Set-PSReadLineOption -BellStyle None -Verbose:$false
+    Set-PSReadLineKeyHandler -Chord 'Ctrl+d' -Function DeleteChar
+    Set-PSReadLineOption -PredictionSource HistoryAndPlugin
+    Set-PSReadLineOption -Colors @{ InlinePrediction = '#2F7004' }
+    Set-PSReadLineOption -PredictionViewStyle ListView
+
+    Set-PSReadLineKeyHandler -Key Ctrl+Shift+b `
+      -BriefDescription BuildCurrentDirectory `
+      -LongDescription "Build the current directory" `
+      -ScriptBlock {
+      [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+      [Microsoft.PowerShell.PSConsoleReadLine]::Insert("dotnet build")
+      [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+    }
+
+    # ----- Set aliases -----
+    $this.aliases.PsObject.Properties.Name.ForEach({ $v = $this.aliases.$_; if ($v) { Set-Alias -Name $_ -Value $v -Scope Global -Force } })
+  }
+  [void] SetPrompt() {
+    if ($null -ne $this.get_omp_Init_job) {
+      $timer = [System.Diagnostics.Stopwatch]::StartNew() # lets wait for 10 seconds max, if not then someting went wrong
+      while ($this.get_omp_Init_job.State -ne "Completed" -and $timer.Elapsed.Seconds -lt 10) {
+        #a do nothing loop
+      }; $timer.Stop()
+      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([IO.File]::ReadAllText(($this.get_omp_Init_job | Receive-Job)))) -Verbose:$false
+    } else {
+      Write-Error "Please run initialize() first"
+    }
+  }
+  [string] getOmpDatadir() {
+    $p = Join-Path ((Get-Variable IsWindows).Value ? $env:LOCALAPPDATA : $ENV:XDG_DATA_DIRS.Split([IO.Path]::PathSeparator).where({ $_ -like "*local*" })[0]) -ChildPath "/oh-my-posh/"
+    if (!(Get-Variable IsWindows).Value) { return '' }; if (![IO.Path]::Exists($p)) { New-Item $p -ItemType Directory -Force }
+    return $p
+  }
+}
+
 class ProfileUpdater {
   [string]$GitHubUsername = 'chadnpc'
   [string]$GistFileName = 'Microsoft.PowerShell_profile.ps1'
@@ -453,7 +608,7 @@ class ProfileUpdater {
 #endregion Classes
 # Types that will be available to users when they import the module.
 $typestoExport = @(
-  [ProfileUpdater]
+  [ProfileUpdater], [ProfileCfg]
 )
 $TypeAcceleratorsClass = [PsObject].Assembly.GetType('System.Management.Automation.TypeAccelerators')
 foreach ($Type in $typestoExport) {
