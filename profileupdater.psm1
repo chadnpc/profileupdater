@@ -214,7 +214,25 @@ class ProfileUpdater {
       Write-Host "🌐 Remote profile version: $remoteVersion" -ForegroundColor Yellow
 
       # Compare versions and content
-      $shouldUpdate = $Force -or ($this.CompareVersions($currentVersion, $remoteVersion)) -or ($this.CompareContent($currentContent, $gistContent))
+      $versionComparison = $this.CompareVersions($currentVersion, $remoteVersion)
+      $contentComparison = $this.CompareContent($currentContent, $gistContent)
+
+      # Check if remote version is older than current version
+      $currentVer = [version]$currentVersion
+      $remoteVer = [version]$remoteVersion
+      $isRemoteOlder = $remoteVer -lt $currentVer
+
+      # Only update if:
+      # 1. Force is specified, OR
+      # 2. Remote version is newer, OR
+      # 3. Versions are equal AND content is different
+      $shouldUpdate = $Force -or $versionComparison -or (($currentVer -eq $remoteVer) -and $contentComparison)
+
+      if ($isRemoteOlder -and -not $Force) {
+        Write-Host "⚠️  Remote version ($remoteVersion) is older than current version ($currentVersion). Skipping update." -ForegroundColor Yellow
+        Write-Host "💡 Use -Force parameter to downgrade if needed." -ForegroundColor Gray
+        return
+      }
 
       if (-not $shouldUpdate) {
         Write-Host "✅ Profile is already up to date!" -ForegroundColor Green
@@ -229,7 +247,14 @@ class ProfileUpdater {
 
       # Confirm update unless forced
       if (-not $Force) {
-        $confirmation = Read-Host "🤔 Update profile from version $currentVersion to $remoteVersion ? (Y/n)"
+        if ($versionComparison) {
+          $confirmation = Read-Host "🤔 Update profile from version $currentVersion to $remoteVersion ? (Y/n)"
+        } elseif ($currentVer -eq $remoteVer) {
+          $confirmation = Read-Host "🤔 Profile content has changed (same version $currentVersion). Update? (Y/n)"
+        } else {
+          $confirmation = Read-Host "🤔 Update profile from version $currentVersion to $remoteVersion ? (Y/n)"
+        }
+
         if ($confirmation -eq 'n' -or $confirmation -eq 'N') {
           Write-Host "❌ Update cancelled by user" -ForegroundColor Yellow
           return
