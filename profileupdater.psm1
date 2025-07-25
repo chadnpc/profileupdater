@@ -1,5 +1,4 @@
-﻿
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 
 #region    Classes
 # $global:profile_initialized = $false
@@ -185,13 +184,13 @@ class ProfileUpdater {
     try {
       # Ensure profile directory exists
       $profileDir = Split-Path $P -Parent
-      if (-not (Test-Path $profileDir)) {
+      if (!(Test-Path $profileDir)) {
         New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
         Write-Host "✅ Created profile directory: $profileDir" -ForegroundColor Green
       }
 
       # Create profile file if it doesn't exist
-      if (-not (Test-Path $P)) {
+      if (!(Test-Path $P)) {
         New-Item -ItemType File -Path $P -Force | Out-Null
         Write-Host "✅ Created profile file: $P" -ForegroundColor Green
       }
@@ -205,7 +204,7 @@ class ProfileUpdater {
       # Get gist content
       $gistContent = $this.GetGistContent($this.GitHubUsername, $GistId, $this.GistFileName)
 
-      if (-not $gistContent) {
+      if (!$gistContent) {
         throw "Failed to retrieve gist content"
       }
 
@@ -228,13 +227,13 @@ class ProfileUpdater {
       # 3. Versions are equal AND content is different
       $shouldUpdate = $Force -or $versionComparison -or (($currentVer -eq $remoteVer) -and $contentComparison)
 
-      if ($isRemoteOlder -and -not $Force) {
+      if ($isRemoteOlder -and !$Force) {
         Write-Host "⚠️  Remote version ($remoteVersion) is older than current version ($currentVersion). Skipping update." -ForegroundColor Yellow
         Write-Host "💡 Use -Force parameter to downgrade if needed." -ForegroundColor Gray
         return
       }
 
-      if (-not $shouldUpdate) {
+      if (!$shouldUpdate) {
         Write-Host "✅ Profile is already up to date!" -ForegroundColor Green
         return
       }
@@ -246,7 +245,7 @@ class ProfileUpdater {
       }
 
       # Confirm update unless forced
-      if (-not $Force) {
+      if (!$Force) {
         if ($versionComparison) {
           $confirmation = Read-Host "🤔 Update profile from version $currentVersion to $remoteVersion ? (Y/n)"
         } elseif ($currentVer -eq $remoteVer) {
@@ -314,11 +313,8 @@ class ProfileUpdater {
     }
   }
   [void] ShowUsage () {
-    <#
-        .SYNOPSIS
-            Shows usage examples for the PowerShell Profile Updater
-        #>
-
+    # .SYNOPSIS
+    # Shows usage examples for the PowerShell Profile Updater
     Write-Host "📖 PowerShell Profile Updater - Usage Examples" -ForegroundColor Cyan
     Write-Host "===============================================" -ForegroundColor Cyan
 
@@ -376,14 +372,8 @@ class ProfileUpdater {
     Write-Host "   -Token           : GitHub personal access token" -ForegroundColor Gray
   }
   [void] TestUpdate() {
-    <#
-        .SYNOPSIS
-            Tests the PowerShell Profile Updater functionality
-
-        .DESCRIPTION
-            Runs various tests to ensure the profile updater works correctly
-        #>
-
+    # .DESCRIPTION
+    #   Runs various tests to ensure the profile updater works correctly
     Write-Host "🧪 Testing PowerShell Profile Updater" -ForegroundColor Cyan
     Write-Host "=====================================" -ForegroundColor Cyan
 
@@ -488,7 +478,7 @@ class ProfileUpdater {
     }
   }
   [bool] CompareContent([string]$Current, [string]$Remote) {
-    if ([string]::IsNullOrEmpty($Current) -and -not [string]::IsNullOrEmpty($Remote)) {
+    if ([string]::IsNullOrEmpty($Current) -and ![string]::IsNullOrEmpty($Remote)) {
       return $true
     }
     # Simple hash comparison
@@ -529,7 +519,7 @@ class ProfileUpdater {
   }
   [void] BackupProfile([int]$BackupCount) {
     $P = $(Get-Variable -ValueOnly PROFILE)
-    if (-not (Test-Path $P)) {
+    if (!(Test-Path $P)) {
       return
     }
 
@@ -571,7 +561,7 @@ class ProfileUpdater {
             $_.files.PSObject.Properties.Name -contains $GistFileName
           } | Select-Object -First 1
 
-          if (-not $targetGist) {
+          if (!$targetGist) {
             throw "No gist found containing file: $GistFileName"
           }
 
@@ -581,7 +571,7 @@ class ProfileUpdater {
           # If public search fails, prompt for authentication
           Write-Host "⚠️  Public gist search failed. Gist may be private." -ForegroundColor Yellow
 
-          if (-not $script:Headers.ContainsKey('Authorization')) {
+          if (!$script:Headers.ContainsKey('Authorization')) {
             $this.Token = Read-Host "Enter GitHub token for private gist access (or press Enter to skip)" -AsSecureString
             if ($this.Token.Length -gt 0) {
               $tokenPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($this.Token))
@@ -593,7 +583,7 @@ class ProfileUpdater {
                 $_.files.PSObject.Properties.Name -contains $GistFileName
               } | Select-Object -First 1
 
-              if (-not $targetGist) {
+              if (!$targetGist) {
                 throw "No gist found containing file: $GistFileName"
               }
 
@@ -613,7 +603,7 @@ class ProfileUpdater {
         $_.Name -eq $GistFileName -or $_.Name -like "*profile*"
       } | Select-Object -First 1
 
-      if (-not $profileFile) {
+      if (!$profileFile) {
         throw "Profile file '$GistFileName' not found in gist"
       }
 
