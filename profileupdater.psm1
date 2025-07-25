@@ -38,12 +38,12 @@ class ProfileCfg {
     return [IO.Path]::Combine([ProfileCfg]::scriptroot, "powershell.config.json")
   }
   [void] Initialize() {
-    if ((Get-Variable profile_initialized).Value) { return }
-    $cfg_ref = [ref]$this
+    if ((Get-Variable profile_initialized -ValueOnly -ea Ignore )) { return }
+    $cfgsession = [ref]$this
     $this.get_omp_Init_job = Start-ThreadJob -Name "Oh My Posh init" -ScriptBlock {
-      $cfg = $using:cfg_ref.value;
-      $omp_json = $cfg.omp_json;
-      $data_dir = $cfg.getOmpDatadir()
+      $cfg = $using:cfgsession;
+      $omp_json = $cfg.value.omp_json;
+      $data_dir = $cfg.value.getOmpDatadir()
       $omp_init_ps1_file = $IsWindows ? $(
         [IO.Path]::Exists($data_dir) ? [string](Get-Item -ea Ignore -Path ("$data_dir/init.*.ps1")) : (& oh-my-posh init powershell --config="$omp_json" --print).Substring(3).Split("'")[0]
       ): $(
