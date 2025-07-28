@@ -1,10 +1,10 @@
 ﻿
 #!/usr/bin/env pwsh
 # .SYNOPSIS
-#   profileupdater testScript v0.1.2
+#   profileupdater testScript v0.1.3
 # .EXAMPLE
-#   ./Test-Module.ps1 -version 0.1.2
-#   Will test the module in ./BuildOutput/profileupdater/0.1.2/
+#   ./Test-Module.ps1 -version 0.1.3
+#   Will test the module in ./BuildOutput/profileupdater/0.1.3/
 # .EXAMPLE
 #   ./Test-Module.ps1
 #   Will test the latest  module version in ./BuildOutput/profileupdater/
