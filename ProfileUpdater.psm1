@@ -1,4 +1,7 @@
 ﻿#!/usr/bin/env pwsh
+using namespace Microsoft.PowerShell
+using namespace System.Collections.Generic
+using namespace System.Management.Automation
 
 #region    Classes
 # $global:profile_initialized = $false
@@ -6,9 +9,9 @@
 class ProfileCfg {
   [bool] $UseOmp = $true
   [bool] $UseZoxide = $true
-  [Microsoft.PowerShell.ExecutionPolicy] $ExecutionPolicy = "RemoteSigned"
+  [ExecutionPolicy] $ExecutionPolicy = "RemoteSigned"
   static [string] $scriptroot = (Get-Item $PROFILE).Directory.FullName
-  hidden $get_omp_Init_job
+  [List[Job]] $jobs = [List[Job]]::new()
 
   ProfileCfg() {
     [void][ProfileCfg]::From([ProfileCfg]::GetConfigFile(), [ref]$this)
@@ -29,49 +32,87 @@ class ProfileCfg {
     }
     $obj = Import-PowerShellDataFile -Path $psd
     $o.Value.PsObject.Properties.Add([psnoteproperty]::new("omp_json", [IO.Path]::Combine([ProfileCfg]::scriptroot, "alain.omp.json")))
-    $o.Value.PsObject.Properties.Add([psnoteproperty]::new("get_omp_Init_job", $null))
-    $obj.PSObject.Properties.Name.ForEach({ $o.Value.$_ ? ($o.Value.$_ = $obj.$_) : ($o.Value.PsObject.Properties.Add([psnoteproperty]::new($_, $obj.$_))) })
+    $obj.Keys.ForEach({ $o.Value.$_ ? ($o.Value.$_ = $obj.$_) : ($o.Value.PsObject.Properties.Add([psnoteproperty]::new($_, $obj.$_))) })
     return $o.Value
   }
   static [IO.FileInfo] GetConfigFile() {
-    return [IO.Path]::Combine([ProfileCfg]::scriptroot, "powershell.config.psd1")
+    return [IO.Path]::Combine([ProfileCfg]::scriptroot, "PowerShell_profile_config.psd1")
   }
   [void] Initialize() {
     if ((Get-Variable profile_initialized -ValueOnly -ea Ignore )) { return }
-    $cfgsession = [ref]$this
-    $this.get_omp_Init_job = Start-ThreadJob -Name "Oh My Posh init" -ScriptBlock {
-      $cfg = $using:cfgsession;
-      $omp_json = $cfg.value.omp_json;
-      $data_dir = $cfg.value.getOmpDatadir()
-      $omp_init_ps1_file = $IsWindows ? $(
-        [IO.Path]::Exists($data_dir) ? [string](Get-Item -ea Ignore -Path ("$data_dir/init.*.ps1")) : (& oh-my-posh init powershell --config="$omp_json" --print).Substring(3).Split("'")[0]
-      ): $(
-        $f = [IO.Path]::GetTempPath() + "init." + [Guid]::NewGuid().ToString() + ".ps1";
-        [IO.File]::WriteAllText($f, (& oh-my-posh init powershell --config="$omp_json" --print))
-        $f
-      )
+    $initSession = [ref]$this
+    $this.jobs.Add((Start-ThreadJob -Name "omp_init" -ScriptBlock { $s = $using:initSession; return $s.value.SetOmpConfig() } -Verbose:$false))
+    $this.ResolveDependencies()
+    $this.SetVariables()
+    $this.SetZoxide()
+    $this.SetPSReadLine()
+    $this.SetAliases()
+    $this.SetFzfOptions()
+  }
+  [string] SetOmpConfig() {
+    if (!$this.UseOmp) { return '' }
+    $omp_json = $this.omp_json;
+    $data_dir = $this.getOmpDatadir()
+    $omp_init_ps1_file = (Get-Variable -ValueOnly IsWindows) ? $(
+      [IO.Path]::Exists($data_dir) ? [string](Get-Item -ea Ignore -Path ("$data_dir/init.*.ps1")) : (& oh-my-posh init powershell --config="$omp_json" --print).Substring(3).Split("'")[0]
+    ): $(
+      $f = [IO.Path]::GetTempPath() + "init." + [Guid]::NewGuid().ToString() + ".ps1";
+      [IO.File]::WriteAllText($f, (& oh-my-posh init powershell --config="$omp_json" --print))
+      $f
+    )
 
-      if (![string]::IsNullOrWhiteSpace($omp_init_ps1_file)) {
-        if ([IO.File]::Exists($omp_json)) {
-          $l = [IO.File]::ReadAllLines($omp_init_ps1_file)
-          if (!$l[0].StartsWith('$VerbosePreference = "silentlyContinue"')) {
-            $l[0] = '$VerbosePreference = "silentlyContinue"' + "`n" + $l[0]
-          }
-          $t = [string]::Join("`n", $l).TrimEnd()
-          if ($t.EndsWith("} | Import-Module -Global")) { $t += ' -Verbose:$false' }
-          [IO.File]::WriteAllText($omp_init_ps1_file, $t)
-          return $omp_init_ps1_file
-        } else {
-          Write-Error "Cannot find $omp_json!"
+    if (![string]::IsNullOrWhiteSpace($omp_init_ps1_file)) {
+      if ([IO.File]::Exists($omp_json)) {
+        $l = [IO.File]::ReadAllLines($omp_init_ps1_file)
+        if (!$l[0].StartsWith('$VerbosePreference = "silentlyContinue"')) {
+          $l[0] = '$VerbosePreference = "silentlyContinue"' + "`n" + $l[0]
         }
-      } else { write-waning "Using omp is disabled" }
-    } -Verbose:$false
-    Set-Variable profile_initialized -Value $true -Scope Global
+        $t = [string]::Join("`n", $l).TrimEnd()
+        if ($t.EndsWith("} | Import-Module -Global")) { $t += ' -Verbose:$false' }
+        [IO.File]::WriteAllText($omp_init_ps1_file, $t)
+      } else {
+        Write-Error "Cannot find $omp_json!"
+      }
+    } else { write-waning "Using omp is disabled" }
+
+    return $omp_init_ps1_file
+  }
+  [void] ResolveDependencies() {
     Set-Variable VerbosePreference -Value "silentlyContinue" -Scope Global
     Set-Variable WarningPreference -Value "silentlyContinue" -Scope Global
-
+    if (!(Get-Command -Name 'oh-my-posh' -Type Application -ErrorAction SilentlyContinue)) {
+      (Get-Variable IsWindows).Value ? (winget install --id=JanDeDobbeleer.OhMyPosh -e) : $null
+    }
+    if (!(Get-Command -Name 'fzf' -Type Application -ErrorAction SilentlyContinue)) {
+      (Get-Variable IsWindows).Value ? (winget install --id=junegunn.fzf -e) : $null
+    }
+  }
+  [void] SetFzfOptions() {
+    if (!(Get-Variable IsWindows).Value) {
+      Import-Module PSFzf -Verbose:$false
+      Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+f' -PSReadlineChordReverseHistory 'Ctrl+r' -Verbose:$false
+    }
+  }
+  [void] SetZoxide() {
+    if ($this.UseZoxide) {
+      if (!(Get-Command -Name 'zoxide' -Type Application -ErrorAction SilentlyContinue)) {
+        (Get-Variable IsWindows).Value ? (winget install --id=ajeetdsouza.zoxide -e) : $null
+      }
+      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([string]::join("`n", @(& zoxide init powershell)))) -Verbose:$false
+    }
+  }
+  [void] SetAliases() {
+    $a = $this.aliases.GetEnumerator() | Select-Object @{l = 'name'; e = { $_.Key } }, @{l = 'value'; e = { $_.value.InvokeReturnAsIs().Invoke() } }
+    $a.Where({ ![string]::IsNullOrWhiteSpace($_.value) }).ForEach({
+        # [scriptblock]::Create("Set-Alias -Name $($_.name) -Value $($_.value) -Scope Global -Force").Invoke()
+        Set-Alias -Name $_.name -Value $_.value -Scope Global -Force
+      }
+    )
+  }
+  [void] SetVariables() {
+    Set-Variable profile_initialized -Value $true -Scope Global
     # ----- Environment variables -----
-    $null = Start-ThreadJob -Name "Set env variables" -ScriptBlock {
+    $null = Start-ThreadJob -Name "SetVariables" -ScriptBlock {
       if ((Get-Variable IsWindows).Value) {
         Set-Env GIT_SSH -Scope Machine -Value "C:\Windows\system32\OpenSSH\ssh.exe" -Verbose:$false
         Set-Env GIT_SSH_COMMAND -Scope Machine -Value "C:\Windows\system32\OpenSSH\ssh.exe -o ControlMaster=auto -o ControlPersist=60s" -Verbose:$false
@@ -98,27 +139,8 @@ class ProfileCfg {
         cliHelper.env\Set-Env -Name PATH -Scope 'Machine' -Value ('{0}{1}{2}' -f (Get-Item Env:/PATH).value, [IO.Path]::PathSeparator, "$((Get-Item Env:/USERPROFILE).value)/.bun/bin")
       }
     }
-
-    # -----  Fzf -----
-    if (!(Get-Variable IsWindows).Value) {
-      Import-Module PSFzf -Verbose:$false
-      Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+f' -PSReadlineChordReverseHistory 'Ctrl+r' -Verbose:$false
-    }
-    # ----- INSTALL DEPENDENCIES -----
-    if (!(Get-Command -Name 'oh-my-posh' -Type Application -ErrorAction SilentlyContinue)) {
-      (Get-Variable IsWindows).Value ? (winget install --id=JanDeDobbeleer.OhMyPosh -e) : $null
-    }
-    if (!(Get-Command -Name 'zoxide' -Type Application -ErrorAction SilentlyContinue)) {
-      (Get-Variable IsWindows).Value ? (winget install --id=ajeetdsouza.zoxide -e) : $null
-    }
-    if (!(Get-Command -Name 'fzf' -Type Application -ErrorAction SilentlyContinue)) {
-      (Get-Variable IsWindows).Value ? (winget install --id=junegunn.fzf -e) : $null
-    }
-    # ----- ZOXIDE config -----
-    if ($this.UseZoxide) {
-      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([string]::join("`n", @(& zoxide init powershell)))) -Verbose:$false
-    }
-    # ----- ReadLine suggestions -----
+  }
+  [void] SetPSReadLine() {
     # Enable-PowerType
     Set-PSReadLineOption -BellStyle None -Verbose:$false
     Set-PSReadLineKeyHandler -Chord 'Ctrl+d' -Function DeleteChar
@@ -134,21 +156,15 @@ class ProfileCfg {
       [Microsoft.PowerShell.PSConsoleReadLine]::Insert("dotnet build")
       [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
     }
-
-    # ----- Set aliases -----
-    $this.aliases.GetEnumerator().ForEach({
-        $v = $_.Value.InvokeReturnAsIs();
-        if ($v) { Set-Alias -Name $_.Key -Value $v -Scope Global -Force }
-      }
-    )
   }
   [void] SetPrompt() {
-    if ($null -ne $this.get_omp_Init_job) {
+    # run by an externl function only when initialize was done
+    if ($this.jobs.Where({ $_.Name -eq "omp_init" }).Count -ne 0) {
       $timer = [System.Diagnostics.Stopwatch]::StartNew() # lets wait for 10 seconds max, if not then someting went wrong
-      while ($this.get_omp_Init_job.State -ne "Completed" -and $timer.Elapsed.Seconds -lt 10) {
+      while ($this.jobs.Where({ $_.Name -eq "omp_init" }).State -ne "Completed" -and $timer.Elapsed.Seconds -lt 10) {
         #a do nothing loop
       }; $timer.Stop()
-      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([IO.File]::ReadAllText(($this.get_omp_Init_job | Receive-Job)))) -Verbose:$false
+      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([IO.File]::ReadAllText(($this.jobs.Where({ $_.Name -eq "omp_init" }) | Receive-Job)))) -Verbose:$false
     } else {
       Write-Error "Please run initialize() first"
     }
@@ -165,9 +181,10 @@ class ProfileCfg {
   }
 }
 
-class ProfileUpdater {
+class ProfileUpdater : PsModulebase {
   [string]$GitHubUsername = 'chadnpc'
   [string]$GistFileName = 'Microsoft.PowerShell_profile.ps1'
+  [string]$ConfigFileName = 'PowerShell_profile_config.psd1'
   [int]$BackupCount = 3
   [string]$Token
 
@@ -190,9 +207,10 @@ class ProfileUpdater {
     Write-Host "🔄 PowerShell Profile Updater" -ForegroundColor Cyan
     Write-Host "================================" -ForegroundColor Cyan
     $P = Get-Variable -ValueOnly PROFILE
+    $profileDir = Split-Path $P -Parent
+    $configPath = Join-Path $profileDir $this.ConfigFileName
     try {
       # Ensure profile directory exists
-      $profileDir = Split-Path $P -Parent
       if (!(Test-Path $profileDir)) {
         New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
         Write-Host "✅ Created profile directory: $profileDir" -ForegroundColor Green
@@ -210,18 +228,20 @@ class ProfileUpdater {
 
       Write-Host "📍 Current profile version: $currentVersion" -ForegroundColor Yellow
 
-      # Get gist content
-      $gistContent = $this.GetGistContent($this.GitHubUsername, $GistId, $this.GistFileName)
+      # Get gist content (now returns hashtable with multiple files)
+      $gistFiles = $this.GetGistContent($this.GitHubUsername, $GistId, @($this.GistFileName, $this.ConfigFileName))
 
-      if (!$gistContent) {
-        throw "Failed to retrieve gist content"
+      if (!$gistFiles -or !$gistFiles[$this.GistFileName]) {
+        throw "Failed to retrieve profile content from gist"
       }
+
+      $gistContent = $gistFiles[$this.GistFileName]
 
       # Get remote version
       $remoteVersion = $this.GetProfileVersion($gistContent)
       Write-Host "🌐 Remote profile version: $remoteVersion" -ForegroundColor Yellow
 
-      # Compare versions and content
+      # Compare versions and content for profile
       $versionComparison = $this.CompareVersions($currentVersion, $remoteVersion)
       $contentComparison = $this.CompareContent($currentContent, $gistContent)
 
@@ -230,10 +250,7 @@ class ProfileUpdater {
       $remoteVer = [version]$remoteVersion
       $isRemoteOlder = $remoteVer -lt $currentVer
 
-      # Only update if:
-      # 1. Force is specified, OR
-      # 2. Remote version is newer, OR
-      # 3. Versions are equal AND content is different
+      # Only update if conditions are met
       $shouldUpdate = $Force -or $versionComparison -or (($currentVer -eq $remoteVer) -and $contentComparison)
 
       if ($isRemoteOlder -and !$Force) {
@@ -244,6 +261,9 @@ class ProfileUpdater {
 
       if (!$shouldUpdate) {
         Write-Host "✅ Profile is already up to date!" -ForegroundColor Green
+
+        # Still check for config file even if profile doesn't need update
+        $this.HandleConfigFile($gistFiles, $configPath)
         return
       }
 
@@ -275,6 +295,9 @@ class ProfileUpdater {
       # Update profile
       Set-Content -Path $P -Value $gistContent -Encoding UTF8
       Write-Host "✅ Profile updated successfully!" -ForegroundColor Green
+
+      # Handle config file
+      $this.HandleConfigFile($gistFiles, $configPath)
 
       # Offer to reload profile
       $reload = Read-Host "🔄 Reload profile now? (Y/n)"
@@ -549,8 +572,28 @@ class ProfileUpdater {
       Write-Host "🧹 Cleaned up old backups (keeping $BackupCount)" -ForegroundColor Gray
     }
   }
-  [string] GetGistContent([string]$GitHubUsername, [string]$GistId, [string]$GistFileName) {
+  [void] HandleConfigFile([hashtable]$GistFiles, [string]$ConfigPath) {
+    if ($GistFiles.ContainsKey($this.ConfigFileName)) {
+      if (!(Test-Path $ConfigPath)) {
+        try {
+          Set-Content -Path $ConfigPath -Value $GistFiles[$this.ConfigFileName] -Encoding UTF8
+          Write-Host "✅ Downloaded config file: $($this.ConfigFileName)" -ForegroundColor Green
+        } catch {
+          Write-Host "⚠️  Failed to save config file: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+      } else {
+        Write-Host "📋 Config file already exists, skipping download" -ForegroundColor Gray
+      }
+    } else {
+      Write-Host "📋 Config file not found in gist, creatng default" -ForegroundColor Gray
+      $this::ReadModuledata("ProfileUpdater").default_profile_config | xconvert Tostring |
+        Set-Content -Path $ConfigPath -Encoding UTF8
+    }
+  }
+  [hashtable] GetGistContent([string]$GitHubUsername, [string]$GistId, [string[]]$FileNames) {
     $gistUrl = ''
+    $result = @{}
+
     try {
       # If specific gist ID is provided, use it directly
       if ($GistId) {
@@ -565,13 +608,13 @@ class ProfileUpdater {
         try {
           $gists = Invoke-RestMethod -Uri $gistsUrl -Headers $script:Headers -ErrorAction Stop -Verbose:$false
 
-          # Find gist containing the profile file
+          # Find gist containing the primary file (profile)
           $targetGist = $gists | Where-Object {
-            $_.files.PSObject.Properties.Name -contains $GistFileName
+            $_.files.PSObject.Properties.Name -contains $FileNames[0]
           } | Select-Object -First 1
 
           if (!$targetGist) {
-            throw "No gist found containing file: $GistFileName"
+            throw "No gist found containing file: $($FileNames[0])"
           }
 
           $gistUrl = $targetGist.url
@@ -589,11 +632,11 @@ class ProfileUpdater {
               # Retry with authentication
               $gists = Invoke-RestMethod -Uri $gistsUrl -Headers $script:Headers -ErrorAction Stop -Verbose:$false
               $targetGist = $gists | Where-Object {
-                $_.files.PSObject.Properties.Name -contains $GistFileName
+                $_.files.PSObject.Properties.Name -contains $FileNames[0]
               } | Select-Object -First 1
 
               if (!$targetGist) {
-                throw "No gist found containing file: $GistFileName"
+                throw "No gist found containing file: $($FileNames[0])"
               }
 
               $gistUrl = $targetGist.url
@@ -607,25 +650,28 @@ class ProfileUpdater {
       # Get the specific gist
       $gist = Invoke-RestMethod -Uri $gistUrl -Headers $script:Headers -ErrorAction Stop -Verbose:$false
 
-      # Find the profile file in the gist
-      $profileFile = $gist.files.PSObject.Properties | Where-Object {
-        $_.Name -eq $GistFileName -or $_.Name -like "*profile*"
-      } | Select-Object -First 1
+      # Process each requested file
+      foreach ($fileName in $FileNames) {
+        $file = $gist.files.PSObject.Properties | Where-Object {
+          $_.Name -eq $fileName -or ($fileName -eq $FileNames[0] -and $_.Name -like "*profile*")
+        } | Select-Object -First 1
 
-      if (!$profileFile) {
-        throw "Profile file '$GistFileName' not found in gist"
+        if ($file) {
+          Write-Host "📥 Downloading: $($file.Name)" -ForegroundColor Green
+
+          # Get the raw content
+          $rawUrl = $file.Value.raw_url
+          $content = Invoke-RestMethod -Uri $rawUrl -Headers $script:Headers -ErrorAction Stop -Verbose:$false
+          $result[$fileName] = $content
+        } else {
+          Write-Host "📋 File not found in gist: $fileName" -ForegroundColor Gray
+        }
       }
 
-      Write-Host "📥 Downloading: $($profileFile.Name)" -ForegroundColor Green
-
-      # Get the raw content
-      $rawUrl = $profileFile.Value.raw_url
-      $content = Invoke-RestMethod -Uri $rawUrl -Headers $script:Headers -ErrorAction Stop -Verbose:$false
-
-      return $content
+      return $result
     } catch {
       Write-Error "Failed to get gist content: $($_.Exception.Message)"
-      return $null
+      return @{}
     }
   }
 }
