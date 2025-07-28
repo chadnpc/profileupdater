@@ -1,7 +1,7 @@
 ﻿
 #!/usr/bin/env pwsh
 # .SYNOPSIS
-#   profileupdater buildScript v0.1.1
+#   profileupdater buildScript v0.1.2
 # .DESCRIPTION
 #   A custom build script for the module profileupdater
 # .LINK
