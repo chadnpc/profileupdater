@@ -4,6 +4,8 @@ using namespace System.Collections.Generic
 using namespace System.Management.Automation
 
 #region    Classes
+#Requires -Modules PsModuleBase
+
 # $global:profile_initialized = $false
 
 class ProfileCfg {
@@ -11,6 +13,7 @@ class ProfileCfg {
   [bool] $UseZoxide = $true
   [ExecutionPolicy] $ExecutionPolicy = "RemoteSigned"
   static [string] $scriptroot = (Get-Item $PROFILE).Directory.FullName
+  static [string] $OmpConfigPs1
   [List[Job]] $jobs = [List[Job]]::new()
 
   ProfileCfg() {
@@ -49,11 +52,12 @@ class ProfileCfg {
     $this.SetAliases()
     $this.SetFzfOptions()
   }
-  [string] SetOmpConfig() {
-    if (!$this.UseOmp) { return '' }
+  [void] SetOmpConfig() {
+    if (!$this.UseOmp) { return }
     $omp_json = $this.omp_json;
     $data_dir = $this.getOmpDatadir()
-    $omp_init_ps1_file = (Get-Variable -ValueOnly IsWindows) ? $(
+    # create omp_init ps1_file
+    [ProfileCfg]::OmpConfigPs1 = (Get-Variable -ValueOnly IsWindows) ? $(
       [IO.Path]::Exists($data_dir) ? [string](Get-Item -ea Ignore -Path ("$data_dir/init.*.ps1")) : (& oh-my-posh init powershell --config="$omp_json" --print).Substring(3).Split("'")[0]
     ): $(
       $f = [IO.Path]::GetTempPath() + "init." + [Guid]::NewGuid().ToString() + ".ps1";
@@ -61,21 +65,19 @@ class ProfileCfg {
       $f
     )
 
-    if (![string]::IsNullOrWhiteSpace($omp_init_ps1_file)) {
+    if (![string]::IsNullOrWhiteSpace([ProfileCfg]::OmpConfigPs1)) {
       if ([IO.File]::Exists($omp_json)) {
-        $l = [IO.File]::ReadAllLines($omp_init_ps1_file)
+        $l = [IO.File]::ReadAllLines([ProfileCfg]::OmpConfigPs1)
         if (!$l[0].StartsWith('$VerbosePreference = "silentlyContinue"')) {
           $l[0] = '$VerbosePreference = "silentlyContinue"' + "`n" + $l[0]
         }
         $t = [string]::Join("`n", $l).TrimEnd()
         if ($t.EndsWith("} | Import-Module -Global")) { $t += ' -Verbose:$false' }
-        [IO.File]::WriteAllText($omp_init_ps1_file, $t)
+        [IO.File]::WriteAllText([ProfileCfg]::OmpConfigPs1, $t)
       } else {
         Write-Error "Cannot find $omp_json!"
       }
     } else { write-waning "Using omp is disabled" }
-
-    return $omp_init_ps1_file
   }
   [void] ResolveDependencies() {
     Set-Variable VerbosePreference -Value "silentlyContinue" -Scope Global
@@ -159,14 +161,29 @@ class ProfileCfg {
   }
   [void] SetPrompt() {
     # run by an externl function only when initialize was done
-    if ($this.jobs.Where({ $_.Name -eq "omp_init" }).Count -ne 0) {
-      $timer = [System.Diagnostics.Stopwatch]::StartNew() # lets wait for 10 seconds max, if not then someting went wrong
-      while ($this.jobs.Where({ $_.Name -eq "omp_init" }).State -ne "Completed" -and $timer.Elapsed.Seconds -lt 10) {
-        #a do nothing loop
-      }; $timer.Stop()
-      Invoke-Command -ScriptBlock ([ScriptBlock]::Create([IO.File]::ReadAllText(($this.jobs.Where({ $_.Name -eq "omp_init" }) | Receive-Job)))) -Verbose:$false
+    $j = $this.jobs.Where({ $_.Name -eq "omp_init" })
+    if ($j.Count -eq 0) {
+      throw [System.InvalidOperationException]::new("Please run initialize() first")
+    }
+    $timer = [System.Diagnostics.Stopwatch]::StartNew() # lets wait for 10 seconds max, if not then someting went wrong
+    while ($j.State -ne "Completed" -and $timer.Elapsed.Seconds -lt 10) {
+      #a do nothing loop
+    }; $timer.Stop()
+    # disposing this job might take long , so starting a new job to handle that
+    Start-ThreadJob -Name "dispose-omp-job" -ScriptBlock {
+      $job = $using:j
+      if ($null -eq $job) { return }
+      $t = [System.Diagnostics.Stopwatch]::StartNew()
+      while ($job.State -ne "Completed" -and $t.Elapsed.Seconds -lt 15) { }; $t.Stop()
+      $job | Stop-Job; $job | Remove-Job
+    }
+    if ([IO.File]::Exists([ProfileCfg]::OmpConfigPs1)) {
+      $content = $(try { [IO.File]::ReadAllText([ProfileCfg]::OmpConfigPs1) } catch { [string]::Empty })
+      if (![string]::IsNullOrWhiteSpace($content)) {
+        Invoke-Command -ScriptBlock ([ScriptBlock]::Create($content)) -Verbose:$false
+      }
     } else {
-      Write-Error "Please run initialize() first"
+      Write-Warning "Failed to create omp init script"
     }
     if ((Get-Command fastfetch -Type Application -ea Ignore)) {
       fastfetch --config os
